@@ -1,0 +1,162 @@
+---
+title: "Iowa Education by County"
+format: html
+editor: visual
+---
+
+## Analyzing Iowa Educational Attainment by County
+
+We analyze various levels of educational attainment by county in Iowa, and compare this with the overall population of the county and the median county income. In addition, we investigate how this varies geographically and if geographic location serves as an indicator of educational attainment. We will consider data concerning 2019 from our data sources.
+
+We will get data from the following sites:
+
+-   Estimates of Educational Attainment for Population Over 25 Years by County from [www.data.iowa.gov](https://data.iowa.gov/Community-Demographics/Iowa-Population-25-Years-and-Over-Educational-Atta/jmdm-eaqx/about_data)
+-   Median Household Income by County from [www.iowadatacenter.org](https://www.iowadatacenter.org/index.php/data-by-source/other/median-household-income)
+-   Estimates for County Population in 2019 from [www.census.gov](https://www.census.gov/data/tables/time-series/demo/popest/2010s-counties-total.html)
+
+Since we are interested in the relationship of geography of education, income, and population we overlay a grid system to the counties starting in the southwest corner of the state. This results in essentially a 11x9 grid with a few exceptions made for a few larger than typical counties and on the eastern edge of the state being assigned a 12 horizontally and a 4.5 vertically.
+
+```{r}
+#Uploading the data
+pacman::p_load(tidyverse, knitr,readxl,janitor,stringr)
+library("class")
+library("caret")
+library("mlbench")
+iowa_ed_raw<-read.csv("Iowa_5Year_Ed_Estimates.csv")
+income_raw<-read.csv("Median_Income.csv")         
+population_raw<-read.csv("20102019 Census Pop.csv") 
+grid_raw<-read.csv("Iowa County Grid Numbers.csv")
+```
+
+## Data Cleaning
+```{r}
+#Clean the education data
+iowa_ed<-iowa_ed_raw |> 
+  clean_names() |> 
+  select(-c(1,4,7,13)) |> 
+  filter(type=="county",data_collection_period=="2015-2019") |> 
+  select(-c(1,4)) |> 
+  mutate(name=(str_replace_all(name," County, Iowa",""))) |> 
+  arrange(name,educational_category) |> 
+  mutate(educational_category=if_else(is.na(educational_category),"Total Over 25",educational_category)) |> 
+  mutate(variable_description=factor(variable_description),educational_category=ordered(educational_category,levels=c("Less than High School","High School Graduate","Some College or Associates Degree","Bachelors Degree or Higher","Total Over 25"))) 
+
+#Clean the population data
+population<-population_raw |>
+  clean_names() |>
+  select(c(1,13)) |>
+  filter(geographic_area!="Iowa") |>
+  mutate(geographic_area=str_replace_all(geographic_area," County, Iowa",""),geographic_area=str_remove_all(geographic_area,'\\.')) |>
+  rename(population_2019=x2019)|>
+  mutate(geographic_area=str_to_lower(geographic_area))
+
+#Clean the income data
+income<-income_raw |> 
+  select(c(1,14)) |> 
+  clean_names( )|> 
+  rename(income_2019=x2019) |> 
+  mutate(geographic_name=str_replace_all(geographic_name," County",""),income_2019=str_remove_all(income_2019,'\\$|.00$|\\,'),income_2019=as.numeric(income_2019))|> 
+  mutate(geographic_name=str_to_lower(geographic_name))
+str(income)
+
+#Clean the grid data, including the apostraphe in o'brien
+grid_numbers<-grid_raw |> 
+  select(1:3) |> 
+  clean_names() |>
+  mutate(county_name=str_to_lower(county_name),x_location=factor(x_location,levels=1:12),y_location=factor(y_location,levels=c(1:4,4.5,5:9)))
+
+grid_numbers[82,1]<-'o\'brien'
+
+#get the map data, and fix the value for O'Brien County
+ia_county <- map_data("county") %>% 
+  filter(region == "iowa") |> 
+  mutate(subregion=if_else(subregion=="obrien","o'brien",subregion))
+
+```
+
+
+## Summarizing Data
+
+We will summarize the data by grouping according to different levels of educational attainment. We'll do this in two ways. First  we will
+
+```{r}
+iowa_ed_grouped1<-iowa_ed |> 
+  group_by(name,educational_category) |> 
+  summarize(total=sum(population_estimate)) |> 
+  pivot_wider(names_from=educational_category,values_from=total) |> 
+  clean_names() |> 
+  mutate(name=str_to_lower(name)) |> 
+  mutate(less_than_high_school_pct=less_than_high_school/total_over_25,high_school_graduate_pct=high_school_graduate/total_over_25,
+         some_college_or_associates_degree_pct=some_college_or_associates_degree/total_over_25,bachelors_degree_or_higher_pct=bachelors_degree_or_higher/total_over_25)
+
+iowa_ed_grouped2a<-iowa_ed |> 
+  group_by(name,high_school_diploma,college_degree,graduate_degree) |> 
+  summarize(total=sum(population_estimate))
+
+iowa_ed_grouped2<-tibble(name=income$geographic_name,no_highschool_diploma=iowa_ed_grouped2a$total[seq(from=1,to=491,by=5)],highschool_diploma=iowa_ed_grouped2a$total[seq(from=2,to=492,by=5)],college_degree=iowa_ed_grouped2a$total[seq(from=3,to=493,by=5)],graduate_degree=iowa_ed_grouped2a$total[seq(from=4,to=494,by=5)],total=iowa_ed_grouped2a$total[seq(from=5,to=495,by=5)])
+
+```
+
+In the data, we check the most populous counties and the counties with the highest income. We will check for any outliers in the data. In particular we will see if we can separate the many small counties from the relatively few large counties
+```{r}
+head(arrange(population,desc(population_2019)),20)
+```
+
+
+### Joining the Data
+
+```{r}
+#Make joined data sets, first with the map data and again with just the pop and income data added.
+iowa_education<-iowa_ed_grouped |> 
+  left_join(income,by=c("name"="geographic_name")) |>
+   left_join(population,by=c("name"="geographic_area"))|> 
+  left_join(grid_numbers,by=c("name"="county_name"))
+
+iowa_education
+summary(iowa_education)
+
+iowa_education_map<-ia_county |> 
+  left_join(iowa_education, by = c("subregion" = "name"))
+
+iowa_education_map
+
+```
+
+Before proceeding with the exploration and analysis, we will quickly check that no errors were introduced during the cleaning and joining process.
+
+```{r}
+#Do a quick check that the data isn't clearly wrong.
+filter(iowa_education,total_over_25>population_2019)
+iowa_education[2]+iowa_education[3]+iowa_education[4]+iowa_education[5]-iowa_education[6]
+```
+
+
+## Visualizing Educational Data Geographically
+
+```{r}
+#Plot education by county. Choose different variables to plot
+ggplot(iowa_education_map, aes(x = long, y = lat, 
+                               fill = high_school_graduate_pct) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+
+ggplot(iowa_education_map, aes(x = long, y = lat, 
+                               fill = bachelors_degree_or_higher_pct) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+
+ggplot(iowa_education_map, aes(x = long, y = lat, 
+                               fill = income_2019) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+
+ggplot(iowa_education_map, aes(x = long, y = lat, 
+                               fill = total_over_25) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+```
+
