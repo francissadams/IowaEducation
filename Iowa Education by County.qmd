@@ -16,7 +16,7 @@ We will get data from the following sites:
 
 Since we are interested in the relationship of geography of education, income, and population we overlay a grid system to the counties starting in the southwest corner of the state. This results in essentially a 11x9 grid with a few exceptions made for a few larger than typical counties and on the eastern edge of the state being assigned a 12 horizontally and a 4.5 vertically.
 
-```{r}
+```{r include=FALSE}
 #Uploading the data
 pacman::p_load(tidyverse, knitr,readxl,janitor,stringr)
 library("class")
@@ -28,9 +28,17 @@ population_raw<-read.csv("20102019 Census Pop.csv")
 grid_raw<-read.csv("Iowa County Grid Numbers.csv")
 ```
 
-## Data Cleaning
+## Preparing the Data
+
+We start by preparing the data for the analysis. This includes cleaning the data, summarizing the data by different levels of educational attainment, and joining the data sets together.
+
+### Data Cleaning
+
+We clean the various datasets by fixing names, uniformizing values, and removing columns and rows we won't use.
+
 ```{r}
-#Clean the education data
+#Clean the education data to get county level data ending in 2019, 
+#including recording Master's degrees as a grad degree
 iowa_ed<-iowa_ed_raw |> 
   clean_names() |> 
   select(-c(1,4,7,13)) |> 
@@ -39,7 +47,8 @@ iowa_ed<-iowa_ed_raw |>
   mutate(name=(str_replace_all(name," County, Iowa",""))) |> 
   arrange(name,educational_category) |> 
   mutate(educational_category=if_else(is.na(educational_category),"Total Over 25",educational_category)) |> 
-  mutate(variable_description=factor(variable_description),educational_category=ordered(educational_category,levels=c("Less than High School","High School Graduate","Some College or Associates Degree","Bachelors Degree or Higher","Total Over 25"))) 
+  mutate(variable_description=factor(variable_description),educational_category=ordered(educational_category,levels=c("Less than High School","High School Graduate","Some College or Associates Degree","Bachelors Degree or Higher","Total Over 25"))) |> 
+  mutate(graduate_degree=if_else(variable_description=="Master's degree","Yes",graduate_degree))
 
 #Clean the population data
 population<-population_raw |>
@@ -48,7 +57,7 @@ population<-population_raw |>
   filter(geographic_area!="Iowa") |>
   mutate(geographic_area=str_replace_all(geographic_area," County, Iowa",""),geographic_area=str_remove_all(geographic_area,'\\.')) |>
   rename(population_2019=x2019)|>
-  mutate(geographic_area=str_to_lower(geographic_area))
+  mutate(geographic_area=str_to_lower(geographic_area),population_2019=as.numeric(str_remove(population_2019,'\\,')))
 
 #Clean the income data
 income<-income_raw |> 
@@ -57,13 +66,13 @@ income<-income_raw |>
   rename(income_2019=x2019) |> 
   mutate(geographic_name=str_replace_all(geographic_name," County",""),income_2019=str_remove_all(income_2019,'\\$|.00$|\\,'),income_2019=as.numeric(income_2019))|> 
   mutate(geographic_name=str_to_lower(geographic_name))
-str(income)
 
-#Clean the grid data, including the apostraphe in o'brien
+#Clean the grid data, including the apostrophe in o'brien
 grid_numbers<-grid_raw |> 
   select(1:3) |> 
   clean_names() |>
-  mutate(county_name=str_to_lower(county_name),x_location=factor(x_location,levels=1:12),y_location=factor(y_location,levels=c(1:4,4.5,5:9)))
+  mutate(county_name=str_to_lower(county_name))
+  #mutate(county_name=str_to_lower(county_name),x_location=factor(x_location,levels=1:12),y_location=factor(y_location,levels=c(1:4,4.5,5:9)))
 
 grid_numbers[82,1]<-'o\'brien'
 
@@ -73,11 +82,11 @@ ia_county <- map_data("county") %>%
   mutate(subregion=if_else(subregion=="obrien","o'brien",subregion))
 
 ```
+![Iowa Grid](Iowa Grid.png)
 
+### Summarizing Data
 
-## Summarizing Data
-
-We will summarize the data by grouping according to different levels of educational attainment. We'll do this in two ways. First  we will
+We will summarize the data by grouping according to different levels of educational attainment. We'll do this in two ways. First we will have data based on different levels up to a bachelor's degree. Second we will group based on the highest type of degree obtained. The variable `college_degree` includes Associate's and Bachelor's degrees while `graduate_degree` includes Master's, Doctorates, and Professional degrees.
 
 ```{r}
 iowa_ed_grouped1<-iowa_ed |> 
@@ -89,74 +98,196 @@ iowa_ed_grouped1<-iowa_ed |>
   mutate(less_than_high_school_pct=less_than_high_school/total_over_25,high_school_graduate_pct=high_school_graduate/total_over_25,
          some_college_or_associates_degree_pct=some_college_or_associates_degree/total_over_25,bachelors_degree_or_higher_pct=bachelors_degree_or_higher/total_over_25)
 
+head(iowa_ed_grouped1)
+
 iowa_ed_grouped2a<-iowa_ed |> 
   group_by(name,high_school_diploma,college_degree,graduate_degree) |> 
   summarize(total=sum(population_estimate))
 
 iowa_ed_grouped2<-tibble(name=income$geographic_name,no_highschool_diploma=iowa_ed_grouped2a$total[seq(from=1,to=491,by=5)],highschool_diploma=iowa_ed_grouped2a$total[seq(from=2,to=492,by=5)],college_degree=iowa_ed_grouped2a$total[seq(from=3,to=493,by=5)],graduate_degree=iowa_ed_grouped2a$total[seq(from=4,to=494,by=5)],total=iowa_ed_grouped2a$total[seq(from=5,to=495,by=5)])
 
-```
+head(iowa_ed_grouped2)
 
-In the data, we check the most populous counties and the counties with the highest income. We will check for any outliers in the data. In particular we will see if we can separate the many small counties from the relatively few large counties
-```{r}
-head(arrange(population,desc(population_2019)),20)
 ```
-
 
 ### Joining the Data
 
+We attach our data sets to the grouped education data: income, population, grid location, and map data. The map data will be separate so we can work with a data set containing one row per county for some of the analysis.
+
 ```{r}
 #Make joined data sets, first with the map data and again with just the pop and income data added.
-iowa_education<-iowa_ed_grouped |> 
+iowa_education1<-iowa_ed_grouped1 |> 
   left_join(income,by=c("name"="geographic_name")) |>
    left_join(population,by=c("name"="geographic_area"))|> 
   left_join(grid_numbers,by=c("name"="county_name"))
 
-iowa_education
-summary(iowa_education)
+iowa_education_map1<-ia_county |> 
+  left_join(iowa_education1, by = c("subregion" = "name"))
 
-iowa_education_map<-ia_county |> 
-  left_join(iowa_education, by = c("subregion" = "name"))
 
-iowa_education_map
+iowa_education2<-iowa_ed_grouped2 |> 
+  left_join(income,by=c("name"="geographic_name")) |>
+   left_join(population,by=c("name"="geographic_area"))|> 
+  left_join(grid_numbers,by=c("name"="county_name"))
+
+iowa_education_map2<-ia_county |> 
+  left_join(iowa_education2, by = c("subregion" = "name"))
+
+
 
 ```
 
+### Verification
 Before proceeding with the exploration and analysis, we will quickly check that no errors were introduced during the cleaning and joining process.
 
 ```{r}
 #Do a quick check that the data isn't clearly wrong.
-filter(iowa_education,total_over_25>population_2019)
-iowa_education[2]+iowa_education[3]+iowa_education[4]+iowa_education[5]-iowa_education[6]
+#filter(iowa_education,total_over_25>population_2019)
+#iowa_education[2]+iowa_education[3]+iowa_education[4]+iowa_education[5]-iowa_education[6]
+#plot(x=iowa_education$total_over_25,y=iowa_education$population_2019)
 ```
 
+## Data Exploration
 
 ## Visualizing Educational Data Geographically
 
+We start by looking at how our data varies across the state.
+
 ```{r}
-#Plot education by county. Choose different variables to plot
-ggplot(iowa_education_map, aes(x = long, y = lat, 
-                               fill = high_school_graduate_pct) )+
-  geom_polygon(aes(group = group), 
-               color = "black") + 
-  coord_fixed(1.3)
-
-ggplot(iowa_education_map, aes(x = long, y = lat, 
-                               fill = bachelors_degree_or_higher_pct) )+
-  geom_polygon(aes(group = group), 
-               color = "black") + 
-  coord_fixed(1.3)
-
-ggplot(iowa_education_map, aes(x = long, y = lat, 
+ggplot(iowa_education_map1, aes(x = long, y = lat, 
                                fill = income_2019) )+
   geom_polygon(aes(group = group), 
                color = "black") + 
   coord_fixed(1.3)
 
-ggplot(iowa_education_map, aes(x = long, y = lat, 
-                               fill = total_over_25) )+
+ggplot(iowa_education_map1, aes(x = long, y = lat, 
+                               fill = population_2019) )+
   geom_polygon(aes(group = group), 
                color = "black") + 
   coord_fixed(1.3)
+#Plot education by county. Choose different variables to plot
+ggplot(iowa_education_map1, aes(x = long, y = lat, 
+                               fill = high_school_graduate_pct) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+
+ggplot(iowa_education_map1, aes(x = long, y = lat, 
+                               fill = bachelors_degree_or_higher_pct) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)
+
+
 ```
 
+##Analyzing the Data
+
+We will analyze the data to see if which variables are the most indicative of educational attainment. We are most interested in seeing if geographic location has any effect. However we also include population and income.
+
+```{r}
+#Linear model for bachelors degree or higher in terms of population and income, with and without interaction. The interaction term is not significant so we remove it.
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~(total_over_25+income_2019)^2))
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~total_over_25+income_2019))
+#both terms are significant
+#add grid location
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~x_location+y_location+income_2019+total_over_25))
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~x_location+y_location+income_2019+total_over_25))
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~x_location+y_location))
+#since income is highly significant in each of these, we use it in a simple regression
+summary(lm(data=iowa_education1,bachelors_degree_or_higher_pct~income_2019))
+ggplot(data=iowa_education1,aes(x=income_2019,y=bachelors_degree_or_higher_pct))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  labs(x="Income",y="Bachelors Degree or Higher %")+
+  theme_bw()
+```
+
+On their own, income and population are very good indicators of educational attainment. When we include the grid location as indicator variables, y value 4 and x values 6 and 10 appear as significant in different models. This could be explained by the position of Des Moines and Ames in column 6, Iowa City and Cedar Rapids in column 10, and Des Moines, Iowa City, and the Quad Cities in row 4.
+
+## Clustering Counties
+
+```{r}
+med<-iowa_education1[,c(7:10)]
+mgrid<-iowa_education1[,c(7:10,13,14)]
+clust_ed<-kmeans(med, centers = 5, nstart = 10)
+clust_ed
+clust_grid<-kmeans(mgrid, centers = 5, nstart = 10)
+clust_grid
+clust_grid$cluster
+
+#add the clusters to the data and use it color a county map
+iowa_education_clustered<-cbind(iowa_education1,clust_ed$cluster) |> 
+  rename(clusters=...15) |> 
+  mutate(clusters=factor(clusters,levels=1:5))
+
+iowa_education_clustered_map<-ia_county |> 
+  left_join(iowa_education_clustered, by = c("subregion" = "name"))
+
+str(iowa_education_clustered_map)
+
+ggplot(iowa_education_clustered_map, aes(x = long, y = lat, 
+                               fill = clusters) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)+
+  scale_fill_brewer(palette = "Dark2")
+
+#Now lets try it again using the data which includes the grid position.
+iowa_education_grid_clustered<-cbind(iowa_education1,clust_grid$cluster) |> 
+  rename(clusters=...15) |> 
+  mutate(clusters=factor(clusters,levels=1:5))
+
+iowa_education_grid_clustered_map<-ia_county |> 
+  left_join(iowa_education_grid_clustered, by = c("subregion" = "name"))
+
+str(iowa_education_grid_clustered_map)
+
+ggplot(iowa_education_grid_clustered_map, aes(x = long, y = lat, 
+                                         fill = clusters) )+
+  geom_polygon(aes(group = group), 
+               color = "black") + 
+  coord_fixed(1.3)+
+  scale_fill_brewer(palette = "Dark2")
+
+#Lets go back to the clustered data and analyze the clusters.
+iowa_education_clustered |> 
+  group_by(clusters) |> 
+  summarize(mean_income=mean(income_2019),mean_bachelors_degree_or_higher_pct=mean(bachelors_degree_or_higher_pct),mean_population=mean(total_over_25))
+#
+```
+
+What we see in the clusters is: - If we include population, we get clusters that clearly correspond to tiers of population. - If we have only education levels and grid location, the clusters are determined by grid location in a way that seems to ignore education.
+
+## Small Counties
+
+In the maps we made previously, there were a handful of very large counties. In the data, we check the most populous counties and the counties with the highest income. We look for any outliers in the data. In particular we will see if we can separate the many small counties from the relatively few large counties, and then analyze these counties separately.
+
+```{r}
+ggplot(population,aes(x=population_2019))+
+  geom_histogram()
+ggplot(population,aes(x=population_2019))+
+  geom_boxplot()
+head(arrange(population,desc(population_2019)),20)
+
+ggplot(income,aes(x=income_2019))+
+  geom_histogram()
+ggplot(income,aes(x=income_2019))+
+  geom_boxplot()
+head(arrange(income,desc(income_2019)),20)
+```
+
+In the population data, there is a very stark cutoff after the 10 largest counties. In the income there is one extreme outlier of Dallas county which includes the west Des Moines metro. Dallas county is also one of the 10 largest. In addition to the 10, Warren county in the south Des Moines metro is an outlier in the income data, and the 11th largest county with a gap of 5000 before the next largest county. So we will include Warren along with the 10 largest counties, and group the remaining 88 counties to be considered separately.
+
+```{r}
+small_counties_education<-iowa_education1 |> 
+  semi_join(filter(population,population_2019<50000),join_by(name==geographic_area))
+summary(small_counties_education)
+
+ggplot(small_counties_education,aes(x=population_2019))+
+  geom_histogram()
+
+ggplot(small_counties_education,aes(x=income_2019))+
+  geom_histogram()
+
+```
